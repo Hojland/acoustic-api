@@ -1,0 +1,30 @@
+name: paid-media-userlist
+
+on: pull_request
+
+env:
+  APPLICATION_NAME: paid-media-userlist
+
+  jobs:
+    pre_fabrication_check:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v1
+        - name: Setup Python environment
+          uses: actions/setup-python@v2
+          with:
+            python-version: '3.x'
+            architecture: 'x64'
+        - name: Install requirements
+          run: |
+            pip install poetry
+            poetry install
+        - name: Run tests
+          run: poetry run pytest
+    check_k8s_manifests:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v1
+        - uses: lra/setup-kubeval@v1
+        - name: Run kubeval
+          run: kubeval --directories k8s/ --ignored-filename-patterns kustomization.yaml

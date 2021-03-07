@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: paid-media-userlist-service
+spec:
+  selector:
+    app: paid-media-userlist
+  ports:
+    - protocol: TCP
+      port: 9001

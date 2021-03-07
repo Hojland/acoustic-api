@@ -1,0 +1,124 @@
+name: paid-media-userlist
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  APPLICATION_NAME: paid-media-userlist
+
+jobs:
+  tag_and_release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.tagging.outputs.new_tag }}
+      release_id: ${{ steps.create_release.outputs.id }}
+      release_url: ${{ steps.create_release.outputs.html_url }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: '0'
+      - id: tagging
+        name: Bump version and push tag
+        uses: anothrNick/github-tag-action@1.26.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WITH_V: true
+          RELEASE_BRANCHES: main
+      - id: create_release
+        name: Create draft release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
+        with:
+          tag_name: ${{ steps.tagging.outputs.new_tag }}
+          release_name: Release ${{ steps.tagging.outputs.new_tag }}
+          body: |
+            Release of the thing - to use:
+              ```
+              docker pull docker.pkg.github.com/${{ github.repository }}/${{env.APPLICATION_NAME}}:${{steps.tagging.outputs.new_tag}}
+              ```
+            # Changelog
+            we did the thing
+            and then the other stuffs
+
+          draft: true
+  pre_fabrication_check:
+    needs: [tag_and_release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup Python environment
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+          architecture: 'x64'
+      - name: Install requirements
+        run: echo "pip install poetry && poetry install"
+      - name: Run tests
+        run: echo "poetry run pytest"
+  build:
+    needs: [tag_and_release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Log into registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login docker.pkg.github.com -u ${{ github.actor }} --password-stdin
+      - name: Build and push
+        id: docker_build
+        run: |
+          IMAGE_ID=docker.pkg.github.com/${{ github.repository }}/${{env.APPLICATION_NAME}}:${{needs.tag_and_release.outputs.release_tag}}
+          docker build --label "org.opencontainers.image.url=${{needs.tag_and_release.outputs.release_url}}" -t ${IMAGE_ID} .
+          docker push ${IMAGE_ID}
+  publish_release:
+    needs: [tag_and_release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: eregon/publish-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          release_id: ${{ needs.tag_and_release.outputs.release_id }}
+  deploy:
+    needs: [tag_and_release, build]
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: eu-central-1
+      EKS_CLUSTER_NAME: shared-platforms-non-prod
+    steps:
+      - uses: actions/checkout@v2
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Setup kubeconfig
+        id: setup-kubeconfig
+        run: |
+          aws eks --region $AWS_REGION update-kubeconfig \
+            --name ${EKS_CLUSTER_NAME} \
+            --role-arn ${{ secrets.AWS_EKS_ROLE_ARN }}
+      - name: Deploy k8s yaml
+        id: deploy-k8s-yaml
+        env:
+          K8S_YAML_DIR: ./k8s/base
+          IMAGE_NAME: docker.pkg.github.com/${{ github.repository }}/${{env.APPLICATION_NAME}}:${{needs.tag_and_release.outputs.release_tag}}
+          K8S_NAMESPACE: martech-test
+        run: |
+          # Ensure we always talk to the right namespace
+          kubectl config set-context --current --namespace=${K8S_NAMESPACE}
+          # Setup kustomize
+          cd $K8S_YAML_DIR
+          curl -s -o kustomize.tar.gz --location https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv3.8.4/kustomize_v3.8.4_linux_amd64.tar.gz
+          tar xzvf kustomize.tar.gz
+          chmod u+x ./kustomize
+          ./kustomize edit set image paid-media-userlist=$IMAGE_NAME
+          ./kustomize edit set namespace ${K8S_NAMESPACE}
+          ./kustomize build . | kubectl apply -f -
+          # Verify deployment
+          kubectl rollout status deployment/paid-media-userlist-deployment
+          
+          # List Public IP of cluster
+          # kubectl get services -o wide

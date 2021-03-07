@@ -1,0 +1,9 @@
+resources:
+  - deployment.yaml
+  - service.yaml
+commonLabels:
+  app: paid-media-userlist
+  owner: martech
+configMapGenerator:
+  - name: paid-media-userlist-map
+    files: []
